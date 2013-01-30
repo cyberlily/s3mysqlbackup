@@ -1,0 +1,141 @@
+#!/bin/bash -e
+
+#
+# mysqldump a remote database, compress before writing to disk and once
+# complete upload it to a specified S3 bucket.
+#
+# This work is licensed under the Creative Commons Attribution 3.0 Unported
+# License. To view a copy of this license, visit
+# http://creativecommons.org/licenses/by/3.0/ or send a letter to Creative
+# Commons, 444 Castro Street, Suite 900, Mountain View, California, 94041, USA.
+#
+
+MYSQLDUMP_OPTS='--all-databases --routines'
+
+
+
+function print_help {
+
+  echo
+  echo "$0 - dump a MySQL server's data, compress and optionally upload to S3"
+  echo
+  echo "Options:"
+  echo
+  echo "  -h           - this help"
+  echo "  -s <host>    - mysql server to connect from.  Creds from ~/.my.cnf"
+  echo "  -b <bucket>  - S3 bucket to place dump in"
+  echo "  -o <outdir>  - local dir to store backup in"
+  echo "  -r <days>    - delete dumps older than N days"
+  echo
+  echo "Example A: $0 -s mysql.mycompany.com -b target-bucket"
+  echo "Example B: $0 -s mysql.mycompany.com -o /var/backups/our_mysql_backups -r 14"
+  echo
+
+}
+
+
+
+DBHOST='localhost'
+OUTDIR=''
+BUCKET=''
+RETAIN=0
+
+set -- $(getopt hb:s:o:r: "$@")
+while [ $# -gt 0 ]
+do
+    case "$1" in
+    (-b) BUCKET=$2; shift;;
+    (-s) DBHOST=$2; shift;;
+    (-o) OUTDIR=$2; shift;;
+    (-r) RETAIN=$2; shift;;
+    (-h) print_help; exit 0;;
+    (--) shift; break;;
+    (-*) print_help; exit 0;;
+    (*)  break;;
+    esac
+    shift
+done
+
+
+
+if [ "$BUCKET" = '' ] && [ "$OUTDIR" = '' ]; then
+  echo "Error: No S3 bucket or output dir specified"
+  print_help
+  exit 1
+fi
+if [ "$BUCKET" != '' ] && [ ! -f ~/.s3cfg ]; then
+  echo "Error: no ~/.s3cfg file to take creds from"
+  print_help
+  exit 1
+fi
+if [ ! -f ~/.my.cnf ]; then
+  echo "Error: no ~/.my.cnf to take creds from"
+  print_help
+  exit 1
+fi
+if [ "$OUTDIR" != '' ]; then
+  if [ -d "$OUTDIR" ] && [ -w "$OUTDIR" ]; then
+    true
+  else
+    echo "Error: output dir $OUTDIR doesn't exist or isn't writable to you"
+    exit 1
+  fi
+fi
+if [ "$TMPDIR" = '' ]; then
+  if [ -d '/tmp' ] && [ -w '/tmp' ]; then
+    TMPDIR=/tmp
+  else
+    echo "No \$TMPDIR to place backup in; can't continue"
+    exit 1
+  fi
+fi
+
+
+
+# ===========================================================================
+#  Create the dump file and place it compressed on the local fs
+
+DUMPFILE=`mktemp "$TMPDIR/mysqldump.sql.bz2.XXXXXX"`
+echo "writing $DUMPFILE"
+mysqldump $MYSQLDUMP_OPTS -h $DBHOST | bzip2 -3 > $DUMPFILE
+
+
+
+# ===========================================================================
+#  Store dumps in target locations
+
+# Make a subdir named after this year/month; otherwise the mountain of files
+# will grow unmanageable.
+subdir=`date +%Y-%m`
+filedate=`date +%Y-%m-%d_%H%M`
+filename="${filedate}_${DBHOST}.sql.bz2"
+
+if [ "$BUCKET" != '' ]; then
+  s3cmd put "$DUMPFILE" "s3://${BUCKET}/${subdir}/${filename}"
+fi
+
+if [ "$OUTDIR" != '' ]; then
+  mkdir -p "${OUTDIR}/${subdir}"
+  mv -v "$DUMPFILE" "${OUTDIR}/${subdir}/${filename}"
+  chmod 600 "${OUTDIR}/${subdir}/${filename}"
+fi
+
+
+
+# ===========================================================================
+#  Delete local copies not covered by our retention policy
+
+if [ "$RETAIN" -gt "0" ]; then
+  if [ "$OUTDIR" != '' ] && [ -d "$OUTDIR" ]; then
+    echo "Removing old local copies..."
+    find "$OUTDIR" -mindepth 1 -mtime $RETAIN -delete
+  fi
+fi
+
+
+
+# ===========================================================================
+#  Clean up
+
+rm -vf "$DUMPFILE"
+
