@@ -1,8 +1,8 @@
 s3mysqlbackup
 =============
 A simple bash script to dump and compress MySQL databases then store:
-1. on the local filesystem, with optional rotation of old backups
-2. and/or in an s3 bucket
+* on the local filesystem, with optional rotation of old backups
+* and/or in an s3 bucket
 
 Uses s3cmd to upload files to S3.
 
