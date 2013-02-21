@@ -151,7 +151,7 @@ else
     fi
     dbtarget="$DUMPDIR/$db.sql.bz2"
     echo "Dumping $dbtarget..."
-    mysqldump --routines "$db" | bzip2 -3 > "$dbtarget"
+    mysqldump --routines -h "$DBHOST" "$db" | bzip2 -3 > "$dbtarget"
   done
   
   # Turn the files into a big tarball.  $filename is used later.
