@@ -33,8 +33,9 @@
 # POSSIBILITY OF SUCH DAMAGE.
 #
 
-MYSQLDUMP_OPTS='--all-databases --routines'
 
+# Bail out immediately on errors
+set -o errexit
 
 
 function print_help {
@@ -49,6 +50,7 @@ function print_help {
   echo "  -b <bucket>  - S3 bucket to place dump in"
   echo "  -o <outdir>  - local dir to store backup in"
   echo "  -r <days>    - delete dumps older than N days"
+  echo "  -f           - dump db's to separate files then tar up together"
   echo
   echo "Example A: $0 -s mysql.mycompany.com -b target-bucket"
   echo "Example B: $0 -s mysql.mycompany.com -o /var/backups/our_mysql_backups -r 14"
@@ -62,8 +64,10 @@ DBHOST='localhost'
 OUTDIR=''
 BUCKET=''
 RETAIN=0
+TARBALL=0
 
-set -- $(getopt hb:s:o:r: "$@")
+
+set -- $(getopt hfb:s:o:r: "$@")
 while [ $# -gt 0 ]
 do
     case "$1" in
@@ -71,6 +75,7 @@ do
     (-s) DBHOST=$2; shift;;
     (-o) OUTDIR=$2; shift;;
     (-r) RETAIN=$2; shift;;
+    (-f) TARBALL=1;;
     (-h) print_help; exit 0;;
     (--) shift; break;;
     (-*) print_help; exit 0;;
@@ -114,33 +119,66 @@ if [ "$TMPDIR" = '' ]; then
 fi
 
 
+# ===========================================================================
+#  Get strings for dates now rather than after the backups happen
+yearmonth=`date +%Y-%m`
+filedate=`date +%Y-%m-%d_%H%M`
+
+
+# Store the initial working dir; we'll go back to it later
+orig_working_dir=$PWD
+
+
 
 # ===========================================================================
 #  Create the dump file and place it compressed on the local fs
 
-DUMPFILE=`mktemp "$TMPDIR/mysqldump.sql.bz2.XXXXXX"`
-echo "writing $DUMPFILE"
-mysqldump $MYSQLDUMP_OPTS -h $DBHOST | bzip2 -3 > $DUMPFILE
+if [ $TARBALL == 0 ]; then
+
+  filename="s3mysqlbackup_${filedate}_${DBHOST}.sql.bz2"
+  echo "writing $filename"
+  mysqldump --all-databases --routines -h $DBHOST | bzip2 -3 > "${TMPDIR}/${filename}"
+
+else
+
+  DUMPDIR=`mktemp -d "$TMPDIR/s3mysqlbackup.XXXXX"`
+  
+  dbs=`mysql --batch --skip-column-names -e 'show databases'`
+  
+  for db in $dbs; do
+    if [ "$db" == 'performance_schema' ] || [ "$db" == 'information_schema' ] ; then
+      continue
+    fi
+    dbtarget="$DUMPDIR/$db.sql.bz2"
+    echo "Dumping $dbtarget..."
+    mysqldump --routines "$db" | bzip2 -3 > "$dbtarget"
+  done
+  
+  # Turn the files into a big tarball.  $filename is used later.
+  filename="s3mysqlbackup_${filedate}_${DBHOST}.tar"
+  cd "$DUMPDIR"
+  tar cf "${TMPDIR}/${filename}" *
+  cd "$TMPDIR"
+  rm -rf "$DUMPDIR"
+
+fi
+
 
 
 
 # ===========================================================================
 #  Store dumps in target locations
 
-# Make a subdir named after this year/month; otherwise the mountain of files
-# will grow unmanageable.
-subdir=`date +%Y-%m`
-filedate=`date +%Y-%m-%d_%H%M`
-filename="${filedate}_${DBHOST}.sql.bz2"
+cd "$orig_working_dir"
 
 if [ "$BUCKET" != '' ]; then
-  s3cmd put "$DUMPFILE" "s3://${BUCKET}/${subdir}/${filename}"
+  s3cmd put "${TMPDIR}/${filename}" "s3://${BUCKET}/${yearmonth}/${filename}"
 fi
 
 if [ "$OUTDIR" != '' ]; then
-  mkdir -p "${OUTDIR}/${subdir}"
-  mv -v "$DUMPFILE" "${OUTDIR}/${subdir}/${filename}"
-  chmod 600 "${OUTDIR}/${subdir}/${filename}"
+  mkdir -p "${OUTDIR}/${yearmonth}"
+  mv -v "${TMPDIR}/${filename}" "${OUTDIR}/${yearmonth}/${filename}"
+  chmod 600 "${OUTDIR}/${yearmonth}/${filename}"
 fi
 
 
@@ -160,5 +198,5 @@ fi
 # ===========================================================================
 #  Clean up
 
-rm -vf "$DUMPFILE"
+rm -vf "${TMPDIR}/${filename}"
 
