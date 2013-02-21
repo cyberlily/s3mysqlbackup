@@ -18,6 +18,7 @@ Options:
   -b <bucket>  - S3 bucket to place dump in
   -o <outdir>  - local dir to store backup in
   -r <days>    - delete dumps older than N days
+  -f           - dump db's to separate files then tar up together
 
 Example A: ./s3mysqlbackup -s mysql.mycompany.com -b target-bucket
 Example B: ./s3mysqlbackup -s mysql.mycompany.com -o /var/backups/our_mysql_backups -r 14
