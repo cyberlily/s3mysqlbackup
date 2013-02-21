@@ -137,13 +137,13 @@ if [ $TARBALL == 0 ]; then
 
   filename="s3mysqlbackup_${filedate}_${DBHOST}.sql.bz2"
   echo "writing $filename"
-  mysqldump --all-databases --routines -h $DBHOST | bzip2 -3 > "${TMPDIR}/${filename}"
+  mysqldump --all-databases --routines --host=$DBHOST | bzip2 -3 > "${TMPDIR}/${filename}"
 
 else
 
   DUMPDIR=`mktemp -d "$TMPDIR/s3mysqlbackup.XXXXX"`
   
-  dbs=`mysql --batch --skip-column-names -e 'show databases'`
+  dbs=`mysql --host=$DBHOST --batch --skip-column-names -e 'show databases'`
   
   for db in $dbs; do
     if [ "$db" == 'performance_schema' ] || [ "$db" == 'information_schema' ] ; then
@@ -151,7 +151,7 @@ else
     fi
     dbtarget="$DUMPDIR/$db.sql.bz2"
     echo "Dumping $dbtarget..."
-    mysqldump --routines -h "$DBHOST" "$db" | bzip2 -3 > "$dbtarget"
+    mysqldump --routines --host=$DBHOST "$db" | bzip2 -3 > "$dbtarget"
   done
   
   # Turn the files into a big tarball.  $filename is used later.
